@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -430,7 +431,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🗂 Мои тесты", callback_data="menu_my_tests")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="menu_my_stats")],
             [InlineKeyboardButton("🌐 Общая статистика", callback_data="menu_global_stats")],
-            [InlineKeyboardButton("ℹ️ Формат TXT", callback_data="menu_format")],
+            [InlineKeyboardButton("ℹ️ Как загрузить TXT", callback_data="menu_format")],
         ]
     )
 
@@ -460,15 +461,46 @@ def build_question_markup(session: dict, question: dict) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(rows)
 
 
+def build_question_text(question: dict, session: dict, remaining_seconds: int) -> str:
+    idx = session["index"]
+    total = len(session["questions"])
+    progress = f"{idx + 1}/{total}"
+    if session["timer_seconds"] <= 0:
+        timer_line = "⏳ Без таймера"
+    else:
+        bar_length = 10
+        filled = max(0, min(bar_length, int(round((remaining_seconds / session["timer_seconds"]) * bar_length))))
+        timer_line = (
+            f"⏳ Таймер: {remaining_seconds:02d}s  "
+            + "█" * filled
+            + "░" * (bar_length - filled)
+        )
+    return f"Вопрос {progress}\n{timer_line}\n\n{question['text']}"
+
+
+def ensure_options_shuffled(question: dict) -> None:
+    if not question.get("_shuffled"):
+        random.shuffle(question["options"])
+        question["_shuffled"] = True
+
+
 def schedule_timer(context: CallbackContext, session: dict) -> None:
-    for job in context.job_queue.get_jobs_by_name(session["job_name"]):
-        job.schedule_removal()
+    for job_name in (session["timeout_job_name"], session["countdown_job_name"]):
+        for job in context.job_queue.get_jobs_by_name(job_name):
+            job.schedule_removal()
     if session["timer_seconds"] > 0:
         context.job_queue.run_once(
             on_timeout,
             when=session["timer_seconds"],
             data={"user_id": session["user_id"], "attempt_id": session["attempt_id"]},
-            name=session["job_name"],
+            name=session["timeout_job_name"],
+        )
+        context.job_queue.run_repeating(
+            update_timer_display,
+            interval=1,
+            first=1,
+            data={"user_id": session["user_id"], "attempt_id": session["attempt_id"]},
+            name=session["countdown_job_name"],
         )
 
 
@@ -480,24 +512,27 @@ async def ask_next_question(context: CallbackContext, session: dict, edit_query=
         return
 
     q = questions[idx]
-    timer = session["timer_seconds"]
-    progress = f"{idx + 1}/{len(questions)}"
-    timer_text = "∞" if timer == 0 else f"{timer} сек"
-    text = f"Вопрос {progress}\nТаймер: {timer_text}\n\n{q['text']}"
+    ensure_options_shuffled(q)
+    remaining = session["timer_seconds"]
+    text = build_question_text(q, session, remaining)
     markup = build_question_markup(session, q)
 
     if edit_query:
-        await edit_query.edit_message_text(text, reply_markup=markup)
+        message = await edit_query.edit_message_text(text, reply_markup=markup)
     else:
-        await context.bot.send_message(chat_id=session["chat_id"], text=text, reply_markup=markup)
+        message = await context.bot.send_message(chat_id=session["chat_id"], text=text, reply_markup=markup)
+
+    if message:
+        session["message_id"] = message.message_id
 
     session["started_question_at"] = datetime.utcnow().timestamp()
     schedule_timer(context, session)
 
 
 async def complete_attempt(context: CallbackContext, session: dict, query=None) -> None:
-    for job in context.job_queue.get_jobs_by_name(session["job_name"]):
-        job.schedule_removal()
+    for job_name in (session["timeout_job_name"], session["countdown_job_name"]):
+        for job in context.job_queue.get_jobs_by_name(job_name):
+            job.schedule_removal()
 
     finish_attempt(session["attempt_id"])
     result = fetch_attempt_result(session["attempt_id"])
@@ -570,8 +605,53 @@ async def on_timeout(context: CallbackContext) -> None:
         timed_out=True,
     )
     session["index"] += 1
+
+    for job_name in (session["timeout_job_name"], session["countdown_job_name"]):
+        for job in context.job_queue.get_jobs_by_name(job_name):
+            job.schedule_removal()
+
     await context.bot.send_message(chat_id=session["chat_id"], text="⏰ Время вышло. Следующий вопрос.")
     await ask_next_question(context, session, edit_query=None)
+
+
+async def update_timer_display(context: CallbackContext) -> None:
+    job_data = context.job.data
+    user_id = job_data["user_id"]
+    attempt_id = job_data["attempt_id"]
+
+    user_ctx = context.application.user_data.get(user_id)
+    if not user_ctx:
+        return
+    session = user_ctx.get("active_attempt")
+    if not session or session["attempt_id"] != attempt_id:
+        return
+
+    idx = session["index"]
+    if idx >= len(session["questions"]):
+        for job_name in (session["timeout_job_name"], session["countdown_job_name"]):
+            for job in context.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
+        return
+
+    q = session["questions"][idx]
+    ensure_options_shuffled(q)
+    elapsed = int(datetime.utcnow().timestamp() - session["started_question_at"])
+    remaining = max(session["timer_seconds"] - elapsed, 0)
+    text = build_question_text(q, session, remaining)
+    markup = build_question_markup(session, q)
+
+    if not session.get("message_id"):
+        return
+
+    try:
+        await context.bot.edit_message_text(
+            chat_id=session["chat_id"],
+            message_id=session["message_id"],
+            text=text,
+            reply_markup=markup,
+        )
+    except Exception:
+        pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -589,19 +669,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def show_format(update: Update, edit: bool = True) -> None:
     text = (
         "Формат TXT:\n\n"
-        "# Название теста (необязательно)\n"
-        "1) Вопрос?\n"
-        "- Вариант 1\n"
-        "+ Вариант 2\n"
-        "- Вариант 3\n\n"
-        "2) Следующий вопрос\n"
-        "- Ответ A *\n"
-        "- Ответ B\n\n"
-        "Как пометить правильный вариант:\n"
-        "• префикс '+'\n"
-        "• суффикс '*'\n"
-        "• суффикс '(+)'\n\n"
-        "Минимум 2 варианта на вопрос, минимум 1 правильный."
+        "# Название теста (необязательно, одно на весь файл)\n"
+        "1) Первый вопрос\n"
+        "- Неправильный вариант\n"
+        "+ Правильный вариант\n"
+        "- Еще один вариант\n\n"
+        "2) Второй вопрос\n"
+        "- Ответ A\n"
+        "- Ответ B *\n"
+        "- Ответ C\n\n"
+        "Правильный ответ можно пометить одним из способов:\n"
+        "• поставить '+' в начале строки\n"
+        "• поставить '*' в конце строки\n"
+        "• поставить '(+)' в конце строки\n\n"
+        "Пример корректного файла:\n"
+        "# Мой тест по языку Python\n"
+        "1) Какой результат 2 + 2?\n"
+        "- 3\n"
+        "+ 4\n"
+        "- 5\n\n"
+        "2) Какой тип у 10 / 2?\n"
+        "- int\n"
+        "- str\n"
+        "- float *\n\n"
+        "Требования:\n"
+        "• файл в UTF-8\n"
+        "• минимум 2 варианта ответа на вопрос\n"
+        "• минимум 1 правильный вариант на вопрос\n"
+        "• размер файла до 1MB\n\n"
+        "Порядок вариантов в файле не важен: бот показывает ответы в случайном порядке, так что правильный вариант не будет всегда первым."
     )
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
@@ -747,6 +843,9 @@ async def start_attempt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "started_question_at": datetime.utcnow().timestamp(),
         "timer_seconds": timer_seconds,
         "job_name": f"attempt:{attempt_id}",
+        "timeout_job_name": f"timeout:{attempt_id}",
+        "countdown_job_name": f"countdown:{attempt_id}",
+        "message_id": None,
     }
     await ask_next_question(context, context.user_data["active_attempt"], edit_query=query)
 
