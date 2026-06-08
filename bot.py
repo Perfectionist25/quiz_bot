@@ -718,15 +718,14 @@ async def view_attempt_result(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not query or not query.data:
         return
     await query.answer()
-    _, attempt_raw = query.data.split(":")
-    attempt_id = int(attempt_raw)
+    parts = query.data.split(":")
+    attempt_id = int(parts[1]) if len(parts) > 1 else 0
     result = fetch_attempt_result(attempt_id)
     if not result:
         await query.edit_message_text("Результат не найден.", reply_markup=main_menu_keyboard())
         return
     answers = fetch_attempt_answers_details(attempt_id)
     page = 1
-    parts = query.data.split(":")
     if len(parts) >= 3:
         try:
             page = int(parts[2])
@@ -776,11 +775,10 @@ async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not query or not query.data:
         return
     await query.answer()
-    _, attempt_raw = query.data.split(":")
-    attempt_id = int(attempt_raw)
+    parts = query.data.split(":")
+    attempt_id = int(parts[1]) if len(parts) > 1 else 0
     rows = fetch_correct_answers(attempt_id)
     page = 1
-    parts = query.data.split(":")
     if len(parts) >= 3:
         try:
             page = int(parts[2])
@@ -826,11 +824,10 @@ async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query or not query.data:
         return
     await query.answer()
-    _, attempt_raw = query.data.split(":")
-    attempt_id = int(attempt_raw)
+    parts = query.data.split(":")
+    attempt_id = int(parts[1]) if len(parts) > 1 else 0
     rows = fetch_wrong_answers(attempt_id)
     page = 1
-    parts = query.data.split(":")
     if len(parts) >= 3:
         try:
             page = int(parts[2])
