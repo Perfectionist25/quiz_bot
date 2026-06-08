@@ -22,6 +22,7 @@ from telegram.ext import (
 DB_PATH = Path(__file__).with_name("quizzbot.db")
 MAX_FILE_SIZE = 1_000_000
 TIMER_PRESETS = [0, 10, 15, 20, 30, 45, 60]
+PAGE_SIZE = 10
 
 
 @dataclass
@@ -413,6 +414,15 @@ def fetch_attempt_answers_details(attempt_id: int) -> List[sqlite3.Row]:
         ).fetchall()
 
 
+    def _paginate(items: List, page: int, per_page: int) -> Tuple[List, int]:
+        total = len(items)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * per_page
+        end = start + per_page
+        return items[start:end], total_pages
+
+
 def user_stats(user_id: int) -> sqlite3.Row:
     with get_conn() as conn:
         return conn.execute(
@@ -686,9 +696,9 @@ async def complete_attempt(context: CallbackContext, session: dict, query=None) 
 
     markup = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{session['attempt_id']}")],
-            [InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{session['attempt_id']}")],
-            [InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{session['attempt_id']}")],
+            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{session['attempt_id']}:1")],
+            [InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{session['attempt_id']}:1")],
+            [InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{session['attempt_id']}:1")],
             [InlineKeyboardButton("🔁 Пройти снова", callback_data=f"open_test:{session['test_id']}")],
             [InlineKeyboardButton("📚 К списку тестов", callback_data="menu_tests")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
@@ -715,18 +725,41 @@ async def view_attempt_result(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Результат не найден.", reply_markup=main_menu_keyboard())
         return
     answers = fetch_attempt_answers_details(attempt_id)
+    page = 1
+    parts = query.data.split(":")
+    if len(parts) >= 3:
+        try:
+            page = int(parts[2])
+        except Exception:
+            page = 1
+
+    page_items, total_pages = _paginate(answers, page, PAGE_SIZE)
     text = (
         f"📄 Полный отчет: {result['test_title']}\n\n"
         f"Результат: {result['score']}%\n"
         f"Правильных: {result['correct_answers']} из {result['total_questions']}\n\n"
-        "Подробности:\n"
+        f"Страница {page}/{total_pages}\n\n"
     )
-    for row in answers:
+    for row in page_items:
         sel = row['selected_text'] or ('время вышло' if row['timed_out'] else 'нет ответа')
         correct = row['correct_text'] or 'не указано'
         mark = '✅' if row['is_correct'] else '❌'
-        text += f"{row['position']}. {row['question_text'][:60]}\n{mark} Ваш ответ: {sel[:60]} | Правильно: {correct[:60]}\n\n"
-    await query.edit_message_text(text, reply_markup=main_menu_keyboard())
+        text += f"{row['position']}. {row['question_text'][:120]}\n{mark} Ваш ответ: {sel[:120]} | Правильно: {correct[:120]}\n\n"
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_result:{attempt_id}:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_result:{attempt_id}:{page+1}"))
+
+    markup = InlineKeyboardMarkup(
+        [
+            nav_buttons,
+            [InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+        ]
+    )
+    await query.edit_message_text(text, reply_markup=markup)
 
 
 async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -737,15 +770,39 @@ async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     _, attempt_raw = query.data.split(":")
     attempt_id = int(attempt_raw)
     rows = fetch_correct_answers(attempt_id)
+    page = 1
+    parts = query.data.split(":")
+    if len(parts) >= 3:
+        try:
+            page = int(parts[2])
+        except Exception:
+            page = 1
+
     if not rows:
         await query.edit_message_text("Нет правильных ответов.", reply_markup=main_menu_keyboard())
         return
-    text = "✅ Список правильных ответов:\n\n"
-    for r in rows:
+
+    page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
+    text = f"✅ Список правильных ответов (страница {page}/{total_pages}):\n\n"
+    for r in page_items:
         sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
         corr = r['correct_text'] or 'не указано'
-        text += f"{r['position']}. {r['text'][:60]}\nВаш ответ: {sel[:60]} | Правильно: {corr[:60]}\n\n"
-    await query.edit_message_text(text, reply_markup=main_menu_keyboard())
+        text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_correct:{attempt_id}:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_correct:{attempt_id}:{page+1}"))
+
+    markup = InlineKeyboardMarkup(
+        [
+            nav_buttons,
+            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+        ]
+    )
+    await query.edit_message_text(text, reply_markup=markup)
 
 
 async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -756,15 +813,39 @@ async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _, attempt_raw = query.data.split(":")
     attempt_id = int(attempt_raw)
     rows = fetch_wrong_answers(attempt_id)
+    page = 1
+    parts = query.data.split(":")
+    if len(parts) >= 3:
+        try:
+            page = int(parts[2])
+        except Exception:
+            page = 1
+
     if not rows:
         await query.edit_message_text("Нет ошибок. Отлично!", reply_markup=main_menu_keyboard())
         return
-    text = "❌ Список ошибок:\n\n"
-    for r in rows:
+
+    page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
+    text = f"❌ Список ошибок (страница {page}/{total_pages}):\n\n"
+    for r in page_items:
         sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
         corr = r['correct_text'] or 'не указано'
-        text += f"{r['position']}. {r['text'][:60]}\nВаш ответ: {sel[:60]} | Правильно: {corr[:60]}\n\n"
-    await query.edit_message_text(text, reply_markup=main_menu_keyboard())
+        text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_wrong:{attempt_id}:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_wrong:{attempt_id}:{page+1}"))
+
+    markup = InlineKeyboardMarkup(
+        [
+            nav_buttons,
+            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+        ]
+    )
+    await query.edit_message_text(text, reply_markup=markup)
 
 
 async def on_timeout(context: CallbackContext) -> None:
@@ -1172,13 +1253,13 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         timed_out=False,
     )
     session["index"] += 1
-    # More vivid feedback
+    # More vivid feedback shown as ephemeral tooltip instead of new message
     feedback = "✅ Верно! 🎉" if is_correct else "❌ Неверно. 😢"
-    await query.answer()
     try:
-        await context.bot.send_message(chat_id=session["chat_id"], text=feedback)
+        await query.answer(feedback, show_alert=False)
     except Exception:
-        pass
+        # fallback to silent answer
+        await query.answer()
     await ask_next_question(context, session, edit_query=query)
 
 
@@ -1399,9 +1480,9 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^answer:\d+:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_stop_attempt, pattern=r"^stop_attempt:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_test_actions, pattern=r"^(rename_test|append_test|delete_test|confirm_delete_test):\d+$"))
-    app.add_handler(CallbackQueryHandler(view_attempt_result, pattern=r"^view_result:\d+$"))
-    app.add_handler(CallbackQueryHandler(view_correct_list, pattern=r"^view_correct:\d+$"))
-    app.add_handler(CallbackQueryHandler(view_wrong_list, pattern=r"^view_wrong:\d+$"))
+    app.add_handler(CallbackQueryHandler(view_attempt_result, pattern=r"^view_result:\d+(?::\d+)?$"))
+    app.add_handler(CallbackQueryHandler(view_correct_list, pattern=r"^view_correct:\d+(?::\d+)?$"))
+    app.add_handler(CallbackQueryHandler(view_wrong_list, pattern=r"^view_wrong:\d+(?::\d+)?$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     return app
