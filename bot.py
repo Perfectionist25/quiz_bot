@@ -407,6 +407,75 @@ def global_stats() -> sqlite3.Row:
         ).fetchone()
 
 
+def fetch_all_users(limit: int = 50) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT u.user_id, u.username, u.first_name, u.created_at,
+                   COUNT(a.id) as attempts,
+                   SUM(CASE WHEN a.completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed,
+                   AVG(CASE WHEN a.completed_at IS NOT NULL THEN a.score END) as avg_score,
+                   MAX(a.score) as best_score
+            FROM users u
+            LEFT JOIN attempts a ON a.user_id = u.user_id
+            GROUP BY u.user_id
+            ORDER BY attempts DESC, avg_score DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def delete_test(test_id: int, user_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM tests WHERE id = ? AND creator_id = ?",
+            (test_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def rename_test(test_id: int, user_id: int, new_title: str) -> bool:
+    new_title = new_title.strip()[:120]
+    if not new_title:
+        return False
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE tests SET title = ? WHERE id = ? AND creator_id = ?",
+            (new_title, test_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def append_questions_to_test(test_id: int, parsed: ParsedTest) -> bool:
+    if not parsed.questions:
+        return False
+    with get_conn() as conn:
+        cur = conn.cursor()
+        existing_count = conn.execute(
+            "SELECT COUNT(*) as count FROM questions WHERE test_id = ?",
+            (test_id,),
+        ).fetchone()["count"]
+        next_position = existing_count + 1
+        for q in parsed.questions:
+            cur.execute(
+                "INSERT INTO questions (test_id, position, text) VALUES (?, ?, ?)",
+                (test_id, next_position, q.text),
+            )
+            question_id = cur.lastrowid
+            for o_idx, (opt_text, is_correct) in enumerate(q.options, start=1):
+                cur.execute(
+                    "INSERT INTO options (question_id, position, text, is_correct) VALUES (?, ?, ?, ?)",
+                    (question_id, o_idx, opt_text, int(is_correct)),
+                )
+            next_position += 1
+        cur.execute(
+            "UPDATE tests SET question_count = question_count + ? WHERE id = ?",
+            (len(parsed.questions), test_id),
+        )
+        return True
+
+
 def leaderboard(limit: int = 5) -> List[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
@@ -423,6 +492,16 @@ def leaderboard(limit: int = 5) -> List[sqlite3.Row]:
         ).fetchall()
 
 
+def reset_user_states(user_data: dict) -> None:
+    for key in (
+        "awaiting_txt",
+        "awaiting_rename_test_id",
+        "awaiting_append_test_id",
+        "awaiting_admin_password",
+    ):
+        user_data.pop(key, None)
+
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -431,23 +510,31 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🗂 Мои тесты", callback_data="menu_my_tests")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="menu_my_stats")],
             [InlineKeyboardButton("🌐 Общая статистика", callback_data="menu_global_stats")],
+            [InlineKeyboardButton("🔐 Все пользователи", callback_data="menu_admin_stats")],
             [InlineKeyboardButton("ℹ️ Как загрузить TXT", callback_data="menu_format")],
         ]
     )
 
 
-def tests_keyboard(tests: List[sqlite3.Row]) -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(f"▶️ {row['title']} ({row['question_count']} вопр.)", callback_data=f"open_test:{row['id']}")]
-        for row in tests
-    ]
+def tests_keyboard(tests: List[sqlite3.Row], mine: bool = False) -> InlineKeyboardMarkup:
+    buttons = []
+    for row in tests:
+        callback = f"open_my_test:{row['id']}" if mine else f"open_test:{row['id']}"
+        buttons.append([InlineKeyboardButton(f"▶️ {row['title']} ({row['question_count']} вопр.)", callback_data=callback)])
     buttons.append([InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")])
     return InlineKeyboardMarkup(buttons)
 
 
 def timer_keyboard(test_id: int) -> InlineKeyboardMarkup:
     labels = {0: "Без таймера", 10: "10с", 15: "15с", 20: "20с", 30: "30с", 45: "45с", 60: "60с"}
-    rows = [[InlineKeyboardButton(labels[val], callback_data=f"pick_timer:{test_id}:{val}")] for val in TIMER_PRESETS]
+    rows = []
+    for val in TIMER_PRESETS:
+        rows.append(
+            [
+                InlineKeyboardButton(labels[val], callback_data=f"pick_timer:{test_id}:{val}:r"),
+                InlineKeyboardButton(f"{labels[val]} 🔀", callback_data=f"pick_timer:{test_id}:{val}:s"),
+            ]
+        )
     rows.append([InlineKeyboardButton("⬅️ К тестам", callback_data="menu_tests")])
     return InlineKeyboardMarkup(rows)
 
@@ -718,12 +805,86 @@ async def show_test_list(update: Update, mine: bool = False) -> None:
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")]])
     else:
         text = title
-        markup = tests_keyboard(tests)
+        markup = tests_keyboard(tests, mine=mine)
 
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=markup)
     else:
         await update.effective_message.reply_text(text, reply_markup=markup)
+
+
+async def show_my_test_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    _, test_id_raw = query.data.split(":")
+    test_id = int(test_id_raw)
+    test = fetch_test_details(test_id)
+    if not test:
+        await query.edit_message_text("Тест не найден.", reply_markup=main_menu_keyboard())
+        return
+
+    user = query.from_user
+    if not user or test["creator_id"] != user.id:
+        await query.edit_message_text("У вас нет прав на управление этим тестом.", reply_markup=main_menu_keyboard())
+        return
+
+    text = (
+        f"🛠 Тест: {test['title']}\n"
+        f"Вопросов: {test['question_count']}\n"
+        f"Автор: {test['creator_name'] or 'Unknown'}\n\n"
+        "Выберите действие:"
+    )
+    markup = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("▶️ Начать тест", callback_data=f"open_test:{test_id}")],
+            [InlineKeyboardButton("✏️ Переименовать", callback_data=f"rename_test:{test_id}")],
+            [InlineKeyboardButton("➕ Добавить вопросы", callback_data=f"append_test:{test_id}")],
+            [InlineKeyboardButton("🗑 Удалить тест", callback_data=f"delete_test:{test_id}")],
+            [InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")],
+        ]
+    )
+    await query.edit_message_text(text, reply_markup=markup)
+
+
+async def prompt_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    reset_user_states(context.user_data)
+    context.user_data["awaiting_admin_password"] = True
+    await query.edit_message_text(
+        "Введите пароль для доступа к полной статистике и списку пользователей:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")]]),
+    )
+
+
+async def show_full_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    users = fetch_all_users(limit=30)
+    gs = global_stats()
+    parts = [
+        "🔐 Полная статистика:\n",
+        f"Тестов создано: {int(gs['tests_total'] or 0)}\n",
+        f"Всего попыток: {int(gs['attempts_total'] or 0)}\n",
+        f"Завершенных: {int(gs['completed_total'] or 0)}\n",
+        f"Средний результат: {float(gs['avg_score'] or 0):.1f}%\n",
+        f"Активных пользователей: {int(gs['active_users'] or 0)}\n\n",
+        "Пользователи (до 30):\n",
+    ]
+    if not users:
+        parts.append("Пока нет зарегистрированных пользователей.")
+    else:
+        for idx, row in enumerate(users, start=1):
+            username = row["username"] or "-"
+            first_name = row["first_name"] or "User"
+            parts.append(
+                f"{idx}. {first_name} (@{username}) — попыток {int(row['attempts'] or 0)}, "
+                f"завершено {int(row['completed'] or 0)}, средний {float(row['avg_score'] or 0):.1f}%, лучш. {int(row['best_score'] or 0)}%\n"
+            )
+    text = "".join(parts)
+    await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
 
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -735,18 +896,22 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     upsert_user(user.id, user.username, user.first_name)
 
     if query.data == "go_menu":
+        reset_user_states(context.user_data)
         await query.edit_message_text("Главное меню:", reply_markup=main_menu_keyboard())
         return
 
     if query.data == "menu_tests":
+        reset_user_states(context.user_data)
         await show_test_list(update, mine=False)
         return
 
     if query.data == "menu_my_tests":
+        reset_user_states(context.user_data)
         await show_test_list(update, mine=True)
         return
 
     if query.data == "menu_create":
+        reset_user_states(context.user_data)
         context.user_data["awaiting_txt"] = True
         await query.edit_message_text(
             "Отправьте TXT-файл с вопросами. Максимальный размер 1MB.",
@@ -755,6 +920,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if query.data == "menu_my_stats":
+        reset_user_states(context.user_data)
         stats = user_stats(user.id)
         text = (
             "📊 Ваша статистика\n\n"
@@ -767,6 +933,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if query.data == "menu_global_stats":
+        reset_user_states(context.user_data)
         gs = global_stats()
         leaders = leaderboard()
         top = "\n".join(
@@ -787,8 +954,14 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(text, reply_markup=main_menu_keyboard())
         return
 
+    if query.data == "menu_admin_stats":
+        await prompt_admin_password(update, context)
+        return
+
     if query.data == "menu_format":
+        reset_user_states(context.user_data)
         await show_format(update, edit=True)
+        return
 
 
 async def handle_test_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -818,9 +991,10 @@ async def start_attempt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     await query.answer()
 
-    _, test_raw, timer_raw = query.data.split(":")
+    _, test_raw, timer_raw, order_flag = query.data.split(":")
     test_id = int(test_raw)
     timer_seconds = int(timer_raw)
+    shuffle_questions = order_flag == "s"
     user = query.from_user
     chat = query.message.chat if query.message else None
     if not chat:
@@ -831,6 +1005,9 @@ async def start_attempt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not questions:
         await query.edit_message_text("В тесте нет вопросов.", reply_markup=main_menu_keyboard())
         return
+
+    if shuffle_questions:
+        random.shuffle(questions)
 
     attempt_id = create_attempt(test_id=test_id, user_id=user.id, timer_seconds=timer_seconds)
     context.user_data["active_attempt"] = {
@@ -919,7 +1096,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     if not message or not user:
         return
-    if not context.user_data.get("awaiting_txt"):
+
+    awaiting_append_test_id = context.user_data.get("awaiting_append_test_id")
+    if not context.user_data.get("awaiting_txt") and awaiting_append_test_id is None:
         return
 
     doc = message.document
@@ -951,6 +1130,26 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if awaiting_append_test_id is not None:
+        if append_questions_to_test(test_id=awaiting_append_test_id, parsed=parsed):
+            reset_user_states(context.user_data)
+            await message.reply_text(
+                f"✅ В тест добавлено {len(parsed.questions)} вопросов.",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("▶️ Начать тест", callback_data=f"open_test:{awaiting_append_test_id}")],
+                        [InlineKeyboardButton("🗂 Мои тесты", callback_data="menu_my_tests")],
+                        [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+                    ]
+                ),
+            )
+        else:
+            await message.reply_text(
+                "Не удалось добавить вопросы. Убедитесь, что вы обновили правильный тест.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")]]),
+            )
+        return
+
     test_id = save_test(creator_id=user.id, source_name=doc.file_name, parsed=parsed)
     context.user_data["awaiting_txt"] = False
     await message.reply_text(
@@ -965,21 +1164,141 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def handle_test_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+
+    action, test_id_raw = query.data.split(":")
+    test_id = int(test_id_raw)
+    test = fetch_test_details(test_id)
+    if not test:
+        await query.edit_message_text("Тест не найден.", reply_markup=main_menu_keyboard())
+        return
+    if test["creator_id"] != user.id:
+        await query.edit_message_text("У вас нет прав на управление этим тестом.", reply_markup=main_menu_keyboard())
+        return
+
+    if action == "rename_test":
+        reset_user_states(context.user_data)
+        context.user_data["awaiting_rename_test_id"] = test_id
+        await query.edit_message_text(
+            "Отправьте новое название для теста:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")]]),
+        )
+        return
+
+    if action == "append_test":
+        reset_user_states(context.user_data)
+        context.user_data["awaiting_append_test_id"] = test_id
+        await query.edit_message_text(
+            "Отправьте TXT-файл с дополнительными вопросами для этого теста:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")]]),
+        )
+        return
+
+    if action == "delete_test":
+        await query.edit_message_text(
+            "Вы уверены, что хотите удалить тест? Это действие нельзя отменить.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("Да, удалить", callback_data=f"confirm_delete_test:{test_id}")],
+                    [InlineKeyboardButton("Нет, назад", callback_data="menu_my_tests")],
+                ]
+            ),
+        )
+        return
+
+    if action == "confirm_delete_test":
+        if delete_test(test_id=test_id, user_id=user.id):
+            reset_user_states(context.user_data)
+            await query.edit_message_text(
+                "✅ Тест удален.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")]]),
+            )
+        else:
+            await query.edit_message_text("Не удалось удалить тест.", reply_markup=main_menu_keyboard())
+        return
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not update.effective_message or not update.effective_message.text:
+        return
+    text = update.effective_message.text.strip()
+
+    rename_test_id = context.user_data.get("awaiting_rename_test_id")
+    if rename_test_id is not None:
+        if rename_test(rename_test_id, user.id, text):
+            reset_user_states(context.user_data)
+            await update.effective_message.reply_text(
+                f"✅ Название теста обновлено на: {text}",
+                reply_markup=main_menu_keyboard(),
+            )
+        else:
+            await update.effective_message.reply_text(
+                "Не удалось переименовать тест. Убедитесь, что вы являетесь автором и отправьте название снова.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")]]),
+            )
+        return
+
+    if context.user_data.get("awaiting_admin_password"):
+        if text == get_admin_password():
+            reset_user_states(context.user_data)
+            await show_full_admin_stats(update, context)
+        else:
+            await update.effective_message.reply_text(
+                "Неверный пароль. Попробуйте снова или вернитесь в меню.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")]]),
+            )
+        return
+
+    if context.user_data.get("awaiting_append_test_id"):
+        await update.effective_message.reply_text(
+            "Нужен TXT-файл с вопросами. Пожалуйста, отправьте документ.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои тесты", callback_data="menu_my_tests")]]),
+        )
+        return
+
+    if context.user_data.get("awaiting_txt"):
+        await update.effective_message.reply_text(
+            "Отправьте TXT-документ с тестом, а не текст.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В меню", callback_data="go_menu")]]),
+        )
+        return
+
+    await update.effective_message.reply_text(
+        "Неизвестная команда. Выберите действие через меню.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
 def build_app(token: str) -> Application:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(
         CallbackQueryHandler(
             handle_menu,
-            pattern=r"^(go_menu|menu_tests|menu_create|menu_my_stats|menu_global_stats|menu_my_tests|menu_format)$",
+            pattern=r"^(go_menu|menu_tests|menu_create|menu_my_stats|menu_global_stats|menu_my_tests|menu_format|menu_admin_stats)$",
         )
     )
+    app.add_handler(CallbackQueryHandler(show_my_test_details, pattern=r"^open_my_test:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_test_open, pattern=r"^open_test:\d+$"))
-    app.add_handler(CallbackQueryHandler(start_attempt, pattern=r"^pick_timer:\d+:\d+$"))
+    app.add_handler(CallbackQueryHandler(start_attempt, pattern=r"^pick_timer:\d+:\d+:(?:r|s)$"))
     app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^answer:\d+:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_stop_attempt, pattern=r"^stop_attempt:\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_test_actions, pattern=r"^(rename_test|append_test|delete_test|confirm_delete_test):\d+$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     return app
+
+
+def get_admin_password() -> str:
+    return os.getenv("ADMIN_PASSWORD", "admin123")
 
 
 def main() -> None:
