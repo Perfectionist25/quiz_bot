@@ -414,13 +414,13 @@ def fetch_attempt_answers_details(attempt_id: int) -> List[sqlite3.Row]:
         ).fetchall()
 
 
-    def _paginate(items: List, page: int, per_page: int) -> Tuple[List, int]:
-        total = len(items)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = max(1, min(page, total_pages))
-        start = (page - 1) * per_page
-        end = start + per_page
-        return items[start:end], total_pages
+def _paginate(items: List, page: int, per_page: int) -> Tuple[List, int]:
+    total = len(items)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    return items[start:end], total_pages
 
 
 def user_stats(user_id: int) -> sqlite3.Row:
