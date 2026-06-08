@@ -759,7 +759,16 @@ async def view_attempt_result(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
         ]
     )
-    await query.edit_message_text(text, reply_markup=markup)
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        # If editing fails (message too long or other issues), send as new message
+        if query.message and query.message.chat:
+            chat_id = query.message.chat.id
+            # truncate if still too long
+            if len(text) > 3900:
+                text = text[:3900] + "\n\n...текст обрезан..."
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
 
 async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -802,7 +811,14 @@ async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
         ]
     )
-    await query.edit_message_text(text, reply_markup=markup)
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        if query.message and query.message.chat:
+            chat_id = query.message.chat.id
+            if len(text) > 3900:
+                text = text[:3900] + "\n\n...текст обрезан..."
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
 
 async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -845,7 +861,14 @@ async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
         ]
     )
-    await query.edit_message_text(text, reply_markup=markup)
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        if query.message and query.message.chat:
+            chat_id = query.message.chat.id
+            if len(text) > 3900:
+                text = text[:3900] + "\n\n...текст обрезан..."
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
 
 async def on_timeout(context: CallbackContext) -> None:
