@@ -714,158 +714,221 @@ async def complete_attempt(context: CallbackContext, session: dict, query=None) 
 
 
 async def view_attempt_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.info(f"view_attempt_result called with data: {update.callback_query.data if update.callback_query else 'NO QUERY'}")
     query = update.callback_query
     if not query or not query.data:
+        logging.warning("view_attempt_result: query or query.data is missing")
         return
-    await query.answer()
-    parts = query.data.split(":")
-    attempt_id = int(parts[1]) if len(parts) > 1 else 0
-    result = fetch_attempt_result(attempt_id)
-    if not result:
-        await query.edit_message_text("Результат не найден.", reply_markup=main_menu_keyboard())
-        return
-    answers = fetch_attempt_answers_details(attempt_id)
-    page = 1
-    if len(parts) >= 3:
-        try:
-            page = int(parts[2])
-        except Exception:
-            page = 1
-
-    page_items, total_pages = _paginate(answers, page, PAGE_SIZE)
-    text = (
-        f"📄 Полный отчет: {result['test_title']}\n\n"
-        f"Результат: {result['score']}%\n"
-        f"Правильных: {result['correct_answers']} из {result['total_questions']}\n\n"
-        f"Страница {page}/{total_pages}\n\n"
-    )
-    for row in page_items:
-        sel = row['selected_text'] or ('время вышло' if row['timed_out'] else 'нет ответа')
-        correct = row['correct_text'] or 'не указано'
-        mark = '✅' if row['is_correct'] else '❌'
-        text += f"{row['position']}. {row['question_text'][:120]}\n{mark} Ваш ответ: {sel[:120]} | Правильно: {correct[:120]}\n\n"
-
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_result:{attempt_id}:{page-1}"))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_result:{attempt_id}:{page+1}"))
-
-    markup = InlineKeyboardMarkup(
-        [
-            nav_buttons,
-            [InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
-        ]
-    )
     try:
-        await query.edit_message_text(text, reply_markup=markup)
-    except Exception:
-        # If editing fails (message too long or other issues), send as new message
-        if query.message and query.message.chat:
-            chat_id = query.message.chat.id
-            # truncate if still too long
-            if len(text) > 3900:
-                text = text[:3900] + "\n\n...текст обрезан..."
-            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+        await query.answer()
+    except Exception as e:
+        logging.error(f"query.answer() failed in view_attempt_result: {e}")
+    
+    try:
+        parts = query.data.split(":")
+        attempt_id = int(parts[1]) if len(parts) > 1 else 0
+        logging.info(f"view_attempt_result: callback_data={query.data}, attempt_id={attempt_id}, parts={parts}")
+        
+        result = fetch_attempt_result(attempt_id)
+        if not result:
+            logging.warning(f"view_attempt_result: attempt {attempt_id} not found in DB")
+            await query.edit_message_text("Результат не найден.", reply_markup=main_menu_keyboard())
+            return
+        logging.info(f"view_attempt_result: fetched result for attempt {attempt_id}")
+        
+        answers = fetch_attempt_answers_details(attempt_id)
+        logging.info(f"view_attempt_result: fetched {len(answers) if answers else 0} answer details")
+        
+        page = 1
+        if len(parts) >= 3:
+            try:
+                page = int(parts[2])
+            except Exception:
+                page = 1
+
+        page_items, total_pages = _paginate(answers, page, PAGE_SIZE)
+        text = (
+            f"📄 Полный отчет: {result['test_title']}\n\n"
+            f"Результат: {result['score']}%\n"
+            f"Правильных: {result['correct_answers']} из {result['total_questions']}\n\n"
+            f"Страница {page}/{total_pages}\n\n"
+        )
+        for row in page_items:
+            sel = row['selected_text'] or ('время вышло' if row['timed_out'] else 'нет ответа')
+            correct = row['correct_text'] or 'не указано'
+            mark = '✅' if row['is_correct'] else '❌'
+            text += f"{row['position']}. {row['question_text'][:120]}\n{mark} Ваш ответ: {sel[:120]} | Правильно: {correct[:120]}\n\n"
+
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_result:{attempt_id}:{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_result:{attempt_id}:{page+1}"))
+
+        markup = InlineKeyboardMarkup(
+            [
+                nav_buttons,
+                [InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+            ]
+        )
+        try:
+            await query.edit_message_text(text, reply_markup=markup)
+            logging.info(f"view_attempt_result: message edited successfully for attempt {attempt_id}")
+        except Exception as e:
+            logging.error(f"view_attempt_result: edit_message_text failed: {e}")
+            # If editing fails (message too long or other issues), send as new message
+            if query.message and query.message.chat:
+                chat_id = query.message.chat.id
+                # truncate if still too long
+                if len(text) > 3900:
+                    text = text[:3900] + "\n\n...текст обрезан..."
+                await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+                logging.info(f"view_attempt_result: sent as new message instead")
+    except Exception as e:
+        logging.error(f"view_attempt_result: unexpected error: {e}", exc_info=True)
+        try:
+            await query.edit_message_text(f"Ошибка: {str(e)[:100]}", reply_markup=main_menu_keyboard())
+        except:
+            pass
 
 
 async def view_correct_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data:
+        logging.warning("view_correct_list: query or query.data is missing")
         return
-    await query.answer()
-    parts = query.data.split(":")
-    attempt_id = int(parts[1]) if len(parts) > 1 else 0
-    rows = fetch_correct_answers(attempt_id)
-    page = 1
-    if len(parts) >= 3:
-        try:
-            page = int(parts[2])
-        except Exception:
-            page = 1
-
-    if not rows:
-        await query.edit_message_text("Нет правильных ответов.", reply_markup=main_menu_keyboard())
-        return
-
-    page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
-    text = f"✅ Список правильных ответов (страница {page}/{total_pages}):\n\n"
-    for r in page_items:
-        sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
-        corr = r['correct_text'] or 'не указано'
-        text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
-
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_correct:{attempt_id}:{page-1}"))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_correct:{attempt_id}:{page+1}"))
-
-    markup = InlineKeyboardMarkup(
-        [
-            nav_buttons,
-            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
-        ]
-    )
     try:
-        await query.edit_message_text(text, reply_markup=markup)
-    except Exception:
-        if query.message and query.message.chat:
-            chat_id = query.message.chat.id
-            if len(text) > 3900:
-                text = text[:3900] + "\n\n...текст обрезан..."
-            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+        await query.answer()
+    except Exception as e:
+        logging.error(f"query.answer() failed in view_correct_list: {e}")
+    
+    try:
+        parts = query.data.split(":")
+        attempt_id = int(parts[1]) if len(parts) > 1 else 0
+        logging.info(f"view_correct_list: callback_data={query.data}, attempt_id={attempt_id}, parts={parts}")
+        
+        rows = fetch_correct_answers(attempt_id)
+        logging.info(f"view_correct_list: fetched {len(rows) if rows else 0} correct answers")
+        
+        page = 1
+        if len(parts) >= 3:
+            try:
+                page = int(parts[2])
+            except Exception:
+                page = 1
+
+        if not rows:
+            logging.info(f"view_correct_list: no rows for attempt {attempt_id}")
+            await query.edit_message_text("Нет правильных ответов.", reply_markup=main_menu_keyboard())
+            return
+
+        page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
+        text = f"✅ Список правильных ответов (страница {page}/{total_pages}):\n\n"
+        for r in page_items:
+            sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
+            corr = r['correct_text'] or 'не указано'
+            text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
+
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_correct:{attempt_id}:{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_correct:{attempt_id}:{page+1}"))
+
+        markup = InlineKeyboardMarkup(
+            [
+                nav_buttons,
+                [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("❌ Ошибки", callback_data=f"view_wrong:{attempt_id}:1")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+            ]
+        )
+        try:
+            await query.edit_message_text(text, reply_markup=markup)
+            logging.info(f"view_correct_list: message edited successfully for attempt {attempt_id}")
+        except Exception as e:
+            logging.error(f"view_correct_list: edit_message_text failed: {e}")
+            if query.message and query.message.chat:
+                chat_id = query.message.chat.id
+                if len(text) > 3900:
+                    text = text[:3900] + "\n\n...текст обрезан..."
+                await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+                logging.info(f"view_correct_list: sent as new message instead")
+    except Exception as e:
+        logging.error(f"view_correct_list: unexpected error: {e}", exc_info=True)
+        try:
+            await query.edit_message_text(f"Ошибка: {str(e)[:100]}", reply_markup=main_menu_keyboard())
+        except:
+            pass
 
 
 async def view_wrong_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data:
+        logging.warning("view_wrong_list: query or query.data is missing")
         return
-    await query.answer()
-    parts = query.data.split(":")
-    attempt_id = int(parts[1]) if len(parts) > 1 else 0
-    rows = fetch_wrong_answers(attempt_id)
-    page = 1
-    if len(parts) >= 3:
-        try:
-            page = int(parts[2])
-        except Exception:
-            page = 1
-
-    if not rows:
-        await query.edit_message_text("Нет ошибок. Отлично!", reply_markup=main_menu_keyboard())
-        return
-
-    page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
-    text = f"❌ Список ошибок (страница {page}/{total_pages}):\n\n"
-    for r in page_items:
-        sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
-        corr = r['correct_text'] or 'не указано'
-        text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
-
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_wrong:{attempt_id}:{page-1}"))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_wrong:{attempt_id}:{page+1}"))
-
-    markup = InlineKeyboardMarkup(
-        [
-            nav_buttons,
-            [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
-        ]
-    )
     try:
-        await query.edit_message_text(text, reply_markup=markup)
-    except Exception:
-        if query.message and query.message.chat:
-            chat_id = query.message.chat.id
-            if len(text) > 3900:
-                text = text[:3900] + "\n\n...текст обрезан..."
-            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+        await query.answer()
+    except Exception as e:
+        logging.error(f"query.answer() failed in view_wrong_list: {e}")
+    
+    try:
+        parts = query.data.split(":")
+        attempt_id = int(parts[1]) if len(parts) > 1 else 0
+        logging.info(f"view_wrong_list: callback_data={query.data}, attempt_id={attempt_id}, parts={parts}")
+        
+        rows = fetch_wrong_answers(attempt_id)
+        logging.info(f"view_wrong_list: fetched {len(rows) if rows else 0} wrong answers")
+        
+        page = 1
+        if len(parts) >= 3:
+            try:
+                page = int(parts[2])
+            except Exception:
+                page = 1
+
+        if not rows:
+            logging.info(f"view_wrong_list: no rows for attempt {attempt_id}")
+            await query.edit_message_text("Нет ошибок. Отлично!", reply_markup=main_menu_keyboard())
+            return
+
+        page_items, total_pages = _paginate(rows, page, PAGE_SIZE)
+        text = f"❌ Список ошибок (страница {page}/{total_pages}):\n\n"
+        for r in page_items:
+            sel = r['selected_text'] or ('время вышло' if r['timed_out'] else 'нет ответа')
+            corr = r['correct_text'] or 'не указано'
+            text += f"{r['position']}. {r['text'][:120]}\nВаш ответ: {sel[:120]} | Правильно: {corr[:120]}\n\n"
+
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_wrong:{attempt_id}:{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"view_wrong:{attempt_id}:{page+1}"))
+
+        markup = InlineKeyboardMarkup(
+            [
+                nav_buttons,
+                [InlineKeyboardButton("📄 Полный отчет", callback_data=f"view_result:{attempt_id}:1"), InlineKeyboardButton("✅ Правильные", callback_data=f"view_correct:{attempt_id}:1")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="go_menu")],
+            ]
+        )
+        try:
+            await query.edit_message_text(text, reply_markup=markup)
+            logging.info(f"view_wrong_list: message edited successfully for attempt {attempt_id}")
+        except Exception as e:
+            logging.error(f"view_wrong_list: edit_message_text failed: {e}")
+            if query.message and query.message.chat:
+                chat_id = query.message.chat.id
+                if len(text) > 3900:
+                    text = text[:3900] + "\n\n...текст обрезан..."
+                await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+                logging.info(f"view_wrong_list: sent as new message instead")
+    except Exception as e:
+        logging.error(f"view_wrong_list: unexpected error: {e}", exc_info=True)
+        try:
+            await query.edit_message_text(f"Ошибка: {str(e)[:100]}", reply_markup=main_menu_keyboard())
+        except:
+            pass
 
 
 async def on_timeout(context: CallbackContext) -> None:
