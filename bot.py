@@ -212,8 +212,8 @@ def parse_test_txt(content: str, fallback_title: str) -> ParsedTest:
 
     if not questions:
         raise ValueError("Не удалось распознать вопросы. Проверь формат.")
-    if len(questions) > 200:
-        raise ValueError("Слишком много вопросов. Лимит: 200.")
+    if len(questions) > 250:
+        raise ValueError("Слишком много вопросов. Лимит: 250.")
 
     return ParsedTest(title=title[:120], questions=questions)
 
