@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Переименовать тест — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>Переименовать тест</h2>
+      <p>Введите новое название для теста.</p>
+    </div>
+  </div>
+  <div class="card-section">
+    <form class="card-form" action="/my-tests/{{ test.id }}/rename" method="post">
+      <div class="form-row">
+        <label>Новое название</label>
+        <input class="text-field" type="text" name="new_title" value="{{ test.title }}" required />
+      </div>
+      <div class="form-actions">
+        <button class="button button-primary" type="submit">Сохранить</button>
+        <a class="button button-secondary" href="/my-tests/{{ test.id }}">Отмена</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

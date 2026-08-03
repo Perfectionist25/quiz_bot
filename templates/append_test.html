@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Добавить вопросы — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>Добавить вопросы</h2>
+      <p>Загрузите TXT-файл с дополнительными вопросами для теста «{{ test.title }}».</p>
+    </div>
+  </div>
+  <div class="card-section">
+    <form class="card-form" action="/my-tests/{{ test.id }}/append" method="post" enctype="multipart/form-data">
+      <div class="form-row">
+        <label>TXT-файл</label>
+        <input class="file-field" type="file" name="file" accept=".txt" required />
+      </div>
+      <div class="form-actions">
+        <button class="button button-primary" type="submit">Загрузить</button>
+        <a class="button button-secondary" href="/my-tests/{{ test.id }}">Отмена</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

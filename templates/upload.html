@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Загрузить тест — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>Загрузить тест</h2>
+      <p>Отправьте TXT-файл с вопросами в формате, описанном на странице «Формат TXT».</p>
+    </div>
+  </div>
+  <div class="card-section">
+    <form class="card-form" action="/upload-test" method="post" enctype="multipart/form-data">
+      <div class="form-row">
+        <label>TXT-файл</label>
+        <input class="file-field" type="file" name="file" accept=".txt" required />
+      </div>
+      <div class="form-actions">
+        <button class="button button-primary" type="submit">Загрузить</button>
+        <a class="button button-secondary" href="/format">Формат TXT</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

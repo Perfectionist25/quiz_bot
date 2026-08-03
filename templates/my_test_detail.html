@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ test.title }} — Мой тест{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>{{ test.title }}</h2>
+      <p>Вопросов: {{ test.question_count }} | Автор: {{ test.creator_name or 'Я' }}</p>
+    </div>
+    <div class="page-actions">
+      <a class="button button-primary" href="/test/{{ test.id }}">Начать тест</a>
+    </div>
+  </div>
+  <div class="card-actions">
+    <a class="button button-secondary" href="/my-tests/{{ test.id }}/rename">Переименовать</a>
+    <a class="button button-secondary" href="/my-tests/{{ test.id }}/append">Добавить вопросы</a>
+    <form class="inline-form" action="/my-tests/{{ test.id }}/delete" method="post">
+      <button class="button button-danger" type="submit">Удалить тест</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

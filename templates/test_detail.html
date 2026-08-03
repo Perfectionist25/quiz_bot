@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ test.title }} — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>{{ test.title }}</h2>
+      <p>Вопросов: {{ test.question_count }} | Автор: {{ test.creator_name or 'Неизвестно' }}</p>
+    </div>
+  </div>
+  <div class="card-section">
+    <form class="card-form" action="/test/{{ test.id }}/start" method="post">
+      <div class="form-row">
+        <label>Выберите таймер на каждый вопрос</label>
+        <select name="timer_seconds" class="select-field">
+          {% for value in timer_options %}
+          <option value="{{ value }}">{% if value == 0 %}Без таймера{% else %}{{ value }} секунд{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row checkbox-row">
+        <label><input type="checkbox" name="shuffle" value="shuffle" /> Перемешать порядок вопросов</label>
+      </div>
+      <div class="form-actions">
+        <button class="button button-primary" type="submit">Начать тест</button>
+        <a class="button button-secondary" href="/tests">К списку тестов</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Вопрос {{ index + 1 }} — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>Вопрос {{ index + 1 }} из {{ total }}</h2>
+      <p>{{ attempt.test_title if attempt.test_title else 'Тест' }}</p>
+    </div>
+    <div class="timer-box" id="timer-box">{{ timer_seconds }} с</div>
+  </div>
+  <div class="question-box">
+    <p class="question-text">{{ question.text }}</p>
+    <form class="options-grid" action="/attempt/{{ attempt.id }}/answer" method="post" id="answer-form">
+      <input type="hidden" name="question_start" value="{{ question_start }}" />
+      <input type="hidden" name="timer_seconds" value="{{ timer_seconds }}" />
+      {% for option in question.options %}
+      <button class="option-button" name="option_id" value="{{ option.id }}" type="submit">{{ option.text }}</button>
+      {% endfor %}
+    </form>
+    <form id="timeout-form" action="/attempt/{{ attempt.id }}/timeout" method="post">
+      <input type="hidden" name="question_start" value="{{ question_start }}" />
+      <input type="hidden" name="timer_seconds" value="{{ timer_seconds }}" />
+    </form>
+    <form class="stop-form" action="/attempt/{{ attempt.id }}/stop" method="post">
+      <button class="button button-secondary" type="submit">⛔ Завершить тест</button>
+    </form>
+  </div>
+</div>
+<script>
+  const timerElement = document.getElementById('timer-box');
+  let timeLeft = {{ timer_seconds }};
+  const timerSeconds = {{ timer_seconds }};
+  if (timerSeconds > 0) {
+    const interval = setInterval(() => {
+      timeLeft -= 1;
+      if (timeLeft < 0) {
+        clearInterval(interval);
+        document.getElementById('timeout-form').submit();
+        return;
+      }
+      timerElement.textContent = timeLeft + ' с';
+      if (timeLeft <= 5) {
+        timerElement.classList.add('timer-alert');
+      }
+    }, 1000);
+  }
+</script>
+{% endblock %}

@@ -1,13 +1,18 @@
 import logging
 import os
 import random
-import re
 import sqlite3
+import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -23,6 +28,16 @@ DB_PATH = Path(__file__).with_name("quizzbot.db")
 MAX_FILE_SIZE = 1_000_000
 TIMER_PRESETS = [0, 10, 15, 20, 30, 45, 60]
 PAGE_SIZE = 10
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+STATIC_DIR = BASE_DIR / "static"
+WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
+WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
+ADMIN_COOKIE_NAME = "quiz_admin"
+USER_COOKIE_NAME = "quiz_user_id"
+
+web_app = FastAPI(title="QuizzBot Web")
+web_app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @dataclass
@@ -47,10 +62,6 @@ def load_env_file(env_path: Path) -> None:
             continue
 
         key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
@@ -132,6 +143,607 @@ def init_db() -> None:
             );
             """
         )
+
+
+def create_web_user() -> int:
+    name = f"Гость{random.randint(1000, 9999)}"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, first_name) VALUES (?, ?)",
+            (None, name),
+        )
+        return int(cur.lastrowid)
+
+
+def get_web_user(request: Request):
+    raw_user_id = request.cookies.get(USER_COOKIE_NAME)
+    if raw_user_id and raw_user_id.isdigit():
+        with get_conn() as conn:
+            user = conn.execute(
+                "SELECT user_id, username, first_name FROM users WHERE user_id = ?",
+                (int(raw_user_id),),
+            ).fetchone()
+            if user:
+                return user, None
+    user_id = create_web_user()
+    with get_conn() as conn:
+        user = conn.execute(
+            "SELECT user_id, username, first_name FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return user, str(user_id)
+
+
+def render_template(request: Request, template: str, context: dict):
+    user, cookie_value = get_web_user(request)
+    response = HTMLResponse(TEMPLATES.TemplateResponse(template, {**base_context(request), **context}))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response, user
+
+
+def create_attempt_record(test_id: int, user_id: int, timer_seconds: int) -> int:
+    return create_attempt(test_id=test_id, user_id=user_id, timer_seconds=timer_seconds)
+
+
+def fetch_attempt(attempt_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM attempts WHERE id = ?",
+            (attempt_id,),
+        ).fetchone()
+
+
+def answered_count(attempt_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as count FROM attempt_answers WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return int(row["count"] or 0)
+
+
+def current_question_state(attempt_id: int):
+    attempt = fetch_attempt(attempt_id)
+    if not attempt:
+        return None
+    questions = fetch_questions_with_options(attempt["test_id"])
+    index = answered_count(attempt_id)
+    if index >= len(questions):
+        return None
+    question = questions[index]
+    ensure_options_shuffled(question)
+    return {
+        "attempt": attempt,
+        "question": question,
+        "index": index,
+        "total": len(questions),
+    }
+
+
+def check_user_owns_attempt(user_id: int, attempt) -> bool:
+    return attempt is not None and int(attempt["user_id"]) == user_id
+
+
+def is_admin_verified(request: Request) -> bool:
+    return request.cookies.get(ADMIN_COOKIE_NAME) == "1"
+
+
+def base_context(request: Request, message: Optional[str] = None) -> dict:
+    return {
+        "request": request,
+        "message": message,
+        "menu": [
+            {"title": "Главная", "href": "/"},
+            {"title": "Список тестов", "href": "/tests"},
+            {"title": "Мои тесты", "href": "/my-tests"},
+            {"title": "Моя статистика", "href": "/stats"},
+            {"title": "Общая статистика", "href": "/global-stats"},
+            {"title": "Формат TXT", "href": "/format"},
+            {"title": "Загрузить тест", "href": "/upload-test"},
+        ],
+    }
+
+
+@web_app.on_event("startup")
+def startup_event():
+    load_env_file(BASE_DIR / ".env")
+    init_db()
+
+
+@web_app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    response, _ = render_template(request, "index.html", {})
+    return response
+
+
+@web_app.get("/format", response_class=HTMLResponse)
+def show_format(request: Request):
+    response, _ = render_template(request, "format.html", {})
+    return response
+
+
+@web_app.get("/tests", response_class=HTMLResponse)
+def list_tests(request: Request):
+    response, _ = render_template(
+        request,
+        "tests.html",
+        {"title": "Список тестов", "tests": fetch_tests(), "mine": False},
+    )
+    return response
+
+
+@web_app.get("/my-tests", response_class=HTMLResponse)
+def my_tests(request: Request):
+    user, cookie_value = get_web_user(request)
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "tests.html",
+        {
+            **base_context(request),
+            "title": "Мои тесты",
+            "tests": fetch_my_tests(int(user["user_id"])),
+            "mine": True,
+            "user": user,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/upload-test", response_class=HTMLResponse)
+def upload_test_page(request: Request):
+    response, _ = render_template(request, "upload.html", {"title": "Загрузить тест"})
+    return response
+
+
+@web_app.post("/upload-test", response_class=HTMLResponse)
+async def upload_test(request: Request, file: UploadFile = File(...)):
+    user, cookie_value = get_web_user(request)
+    if not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Только TXT файлы поддерживаются.")
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл слишком большой. Лимит 1MB.")
+    try:
+        text = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл должен быть в UTF-8.")
+    fallback_title = Path(file.filename).stem
+    try:
+        parsed = parse_test_txt(text, fallback_title=fallback_title)
+    except ValueError as exc:
+        return HTMLResponse(TEMPLATES.TemplateResponse(
+            "upload.html",
+            {
+                **base_context(request, str(exc)),
+                "title": "Загрузить тест",
+            },
+        ))
+    test_id = save_test(int(user["user_id"] or 0), file.filename, parsed)
+    response = RedirectResponse(url=f"/my-tests/{test_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/test/{test_id}", response_class=HTMLResponse)
+def test_detail(request: Request, test_id: int):
+    test = fetch_test_details(test_id)
+    if not test:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден.")
+    response, _ = render_template(
+        request,
+        "test_detail.html",
+        {
+            "title": test["title"],
+            "test": test,
+            "timer_options": TIMER_PRESETS,
+        },
+    )
+    return response
+
+
+@web_app.post("/test/{test_id}/start")
+def start_attempt_web(request: Request, test_id: int, timer_seconds: int = Form(0), shuffle: Optional[str] = Form(None)):
+    user, cookie_value = get_web_user(request)
+    test = fetch_test_details(test_id)
+    if not test:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден.")
+    questions = fetch_questions_with_options(test_id)
+    if not questions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="В тесте нет вопросов.")
+    if shuffle == "shuffle":
+        random.shuffle(questions)
+    attempt_id = create_attempt_record(test_id=test_id, user_id=int(user["user_id"] or 0), timer_seconds=timer_seconds)
+    response = RedirectResponse(url=f"/attempt/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/attempt/{attempt_id}", response_class=HTMLResponse)
+def show_attempt(request: Request, attempt_id: int):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    if attempt["completed_at"] is not None:
+        return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    current = current_question_state(attempt_id)
+    if current is None:
+        finish_attempt(attempt_id)
+        return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    question = current["question"]
+    question_start = datetime.now(timezone.utc).timestamp()
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "attempt.html",
+        {
+            **base_context(request),
+            "title": f"Вопрос {current['index'] + 1}",
+            "attempt": attempt,
+            "question": question,
+            "index": current["index"],
+            "total": current["total"],
+            "question_start": int(question_start),
+            "timer_seconds": int(attempt["timer_seconds"]),
+            "user": user,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.post("/attempt/{attempt_id}/answer")
+def submit_answer(request: Request, attempt_id: int, option_id: int = Form(...), question_start: int = Form(...), timer_seconds: int = Form(...)):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    if attempt["completed_at"] is not None:
+        return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    elapsed = max(0, datetime.now(timezone.utc).timestamp() - question_start)
+    timed_out = timer_seconds > 0 and elapsed > timer_seconds
+    question_state = current_question_state(attempt_id)
+    if question_state is None:
+        finish_attempt(attempt_id)
+        return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    question = question_state["question"]
+    if timed_out:
+        store_answer(
+            attempt_id=attempt_id,
+            question_id=question["id"],
+            selected_option_id=None,
+            is_correct=False,
+            response_seconds=float(timer_seconds),
+            timed_out=True,
+        )
+    else:
+        selected = next((opt for opt in question["options"] if opt["id"] == option_id), None)
+        if selected is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вариант не найден.")
+        store_answer(
+            attempt_id=attempt_id,
+            question_id=question["id"],
+            selected_option_id=option_id,
+            is_correct=bool(selected["is_correct"]),
+            response_seconds=round(elapsed, 2),
+            timed_out=False,
+        )
+    response = RedirectResponse(url=f"/attempt/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.post("/attempt/{attempt_id}/timeout")
+def submit_timeout(request: Request, attempt_id: int, question_start: int = Form(...), timer_seconds: int = Form(...)):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    question_state = current_question_state(attempt_id)
+    if question_state is None:
+        finish_attempt(attempt_id)
+        return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    question = question_state["question"]
+    elapsed = max(0, datetime.now(timezone.utc).timestamp() - question_start)
+    store_answer(
+        attempt_id=attempt_id,
+        question_id=question["id"],
+        selected_option_id=None,
+        is_correct=False,
+        response_seconds=float(min(elapsed, timer_seconds or elapsed)),
+        timed_out=True,
+    )
+    response = RedirectResponse(url=f"/attempt/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.post("/attempt/{attempt_id}/stop")
+def stop_attempt(request: Request, attempt_id: int):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    finish_attempt(attempt_id)
+    response = RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/results/{attempt_id}", response_class=HTMLResponse)
+def view_result(request: Request, attempt_id: int, page: int = 1):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    if attempt["completed_at"] is None:
+        finish_attempt(attempt_id)
+        attempt = fetch_attempt(attempt_id)
+    result = fetch_attempt_result(attempt_id)
+    answers = fetch_attempt_answers_details(attempt_id)
+    pages = (len(answers) + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, pages or 1))
+    start = (page - 1) * PAGE_SIZE
+    page_items = answers[start:start + PAGE_SIZE]
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "results.html",
+        {
+            **base_context(request),
+            "title": "Результат теста",
+            "result": result,
+            "answers": page_items,
+            "page": page,
+            "pages": pages,
+            "section": "all",
+            "attempt_id": attempt_id,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/results/{attempt_id}/correct", response_class=HTMLResponse)
+def view_correct(request: Request, attempt_id: int, page: int = 1):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    rows = fetch_correct_answers(attempt_id)
+    pages = (len(rows) + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, pages or 1))
+    start = (page - 1) * PAGE_SIZE
+    page_items = rows[start:start + PAGE_SIZE]
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "results.html",
+        {
+            **base_context(request),
+            "title": "Правильные ответы",
+            "answers": page_items,
+            "page": page,
+            "pages": pages,
+            "section": "correct",
+            "attempt_id": attempt_id,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/results/{attempt_id}/wrong", response_class=HTMLResponse)
+def view_wrong(request: Request, attempt_id: int, page: int = 1):
+    user, cookie_value = get_web_user(request)
+    attempt = fetch_attempt(attempt_id)
+    if not attempt or not check_user_owns_attempt(int(user["user_id"] or 0), attempt):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Попытка не найдена.")
+    rows = fetch_wrong_answers(attempt_id)
+    pages = (len(rows) + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, pages or 1))
+    start = (page - 1) * PAGE_SIZE
+    page_items = rows[start:start + PAGE_SIZE]
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "results.html",
+        {
+            **base_context(request),
+            "title": "Ошибки",
+            "answers": page_items,
+            "page": page,
+            "pages": pages,
+            "section": "wrong",
+            "attempt_id": attempt_id,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/stats", response_class=HTMLResponse)
+def my_stats(request: Request):
+    user, cookie_value = get_web_user(request)
+    stats = user_stats(int(user["user_id"] or 0))
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "stats.html",
+        {
+            **base_context(request),
+            "title": "Моя статистика",
+            "stats": stats,
+            "mode": "personal",
+            "user": user,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/global-stats", response_class=HTMLResponse)
+def global_stats_page(request: Request):
+    user, cookie_value = get_web_user(request)
+    gs = global_stats()
+    top = leaderboard()
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "stats.html",
+        {
+            **base_context(request),
+            "title": "Общая статистика",
+            "stats": gs,
+            "top": top,
+            "mode": "global",
+            "user": user,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/admin", response_class=HTMLResponse)
+def admin_login(request: Request, error: Optional[str] = None):
+    user, cookie_value = get_web_user(request)
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "admin.html",
+        {**base_context(request), "title": "Админ-доступ", "error": error},
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.post("/admin", response_class=HTMLResponse)
+def admin_auth(request: Request, password: str = Form(...)):
+    user, cookie_value = get_web_user(request)
+    if password != get_admin_password():
+        response = HTMLResponse(TEMPLATES.TemplateResponse(
+            "admin.html",
+            {**base_context(request), "title": "Админ-доступ", "error": "Неверный пароль."},
+        ))
+        if cookie_value:
+            response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+        return response
+    response = RedirectResponse(url="/admin/stats", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(ADMIN_COOKIE_NAME, "1", max_age=60 * 30)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/admin/stats", response_class=HTMLResponse)
+def admin_stats(request: Request):
+    if not is_admin_verified(request):
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    user, cookie_value = get_web_user(request)
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "admin.html",
+        {
+            **base_context(request),
+            "title": "Полная статистика",
+            "admin": True,
+            "stats": global_stats(),
+            "users": fetch_all_users(limit=30),
+            "user": user,
+        },
+    ))
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/my-tests/{test_id}", response_class=HTMLResponse)
+def my_test_detail(request: Request, test_id: int):
+    response, user = render_template(request, "my_test_detail.html", {})
+    test = fetch_test_details(test_id)
+    if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "my_test_detail.html",
+        {**base_context(request), "title": test["title"], "test": test},
+    ))
+    return response
+
+
+@web_app.get("/my-tests/{test_id}/rename", response_class=HTMLResponse)
+def rename_test_page(request: Request, test_id: int):
+    response, user = render_template(request, "rename_test.html", {})
+    test = fetch_test_details(test_id)
+    if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "rename_test.html",
+        {**base_context(request), "title": "Переименовать тест", "test": test},
+    ))
+    return response
+
+
+@web_app.post("/my-tests/{test_id}/rename")
+def rename_test_submit(request: Request, test_id: int, new_title: str = Form(...)):
+    user, cookie_value = get_web_user(request)
+    if not rename_test(test_id, int(user["user_id"] or 0), new_title):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не удалось переименовать тест.")
+    response = RedirectResponse(url=f"/my-tests/{test_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.get("/my-tests/{test_id}/append", response_class=HTMLResponse)
+def append_test_page(request: Request, test_id: int):
+    response, user = render_template(request, "append_test.html", {})
+    test = fetch_test_details(test_id)
+    if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
+    response = HTMLResponse(TEMPLATES.TemplateResponse(
+        "append_test.html",
+        {**base_context(request), "title": "Добавить вопросы", "test": test},
+    ))
+    return response
+
+
+@web_app.post("/my-tests/{test_id}/append", response_class=HTMLResponse)
+async def append_test_upload(request: Request, test_id: int, file: UploadFile = File(...)):
+    user, cookie_value = get_web_user(request)
+    test = fetch_test_details(test_id)
+    if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
+    if not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Только TXT файлы поддерживаются.")
+    content = await file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл должен быть в UTF-8.")
+    parsed = parse_test_txt(text, fallback_title=Path(file.filename).stem)
+    if not append_questions_to_test(test_id=test_id, parsed=parsed):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не удалось добавить вопросы.")
+    response = RedirectResponse(url=f"/my-tests/{test_id}", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+@web_app.post("/my-tests/{test_id}/delete")
+def delete_test_submit(request: Request, test_id: int):
+    user, cookie_value = get_web_user(request)
+    if not delete_test(test_id, int(user["user_id"] or 0)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не удалось удалить тест.")
+    response = RedirectResponse(url="/my-tests", status_code=status.HTTP_303_SEE_OTHER)
+    if cookie_value:
+        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return response
+
+
+def run_web_server() -> None:
+    uvicorn.run(web_app, host=WEB_HOST, port=WEB_PORT, log_level="info")
+
+
+
 
 
 def upsert_user(user_id: int, username: Optional[str], first_name: Optional[str]) -> None:
@@ -547,8 +1159,16 @@ def reset_user_states(user_data: dict) -> None:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
+    # compute site URL: prefer explicit WEB_URL env, fallback to host:port
+    site_url = os.getenv("WEB_URL")
+    if not site_url:
+        host = os.getenv("WEB_HOST", "127.0.0.1")
+        port = os.getenv("WEB_PORT", "8000")
+        site_url = f"http://{host}:{port}"
+
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🌐 Перейти на сайт", url=site_url)],
             [InlineKeyboardButton("📚 Список тестов", callback_data="menu_tests")],
             [InlineKeyboardButton("➕ Создать тест из TXT", callback_data="menu_create")],
             [InlineKeyboardButton("🗂 Мои тесты", callback_data="menu_my_tests")],
@@ -1581,14 +2201,17 @@ def main() -> None:
         level=logging.INFO,
     )
     load_env_file(Path(__file__).with_name(".env"))
+    init_db()
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Укажите BOT_TOKEN в переменных окружения или в файле .env.")
-
-    init_db()
     app = build_app(token)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
     main()
+
+

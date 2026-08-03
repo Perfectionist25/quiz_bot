@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>{{ title }}</h2>
+      {% if result %}
+      <p>Результат: {{ result.score }}% — {{ result.correct_answers }} из {{ result.total_questions }}</p>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-section">
+    {% if section == 'all' %}
+    <p>Полный отчет. Вы можете переключаться между правильными ответами и ошибками.</p>
+    {% elif section == 'correct' %}
+    <p>Список верных ответов.</p>
+    {% else %}
+    <p>Список ошибок.</p>
+    {% endif %}
+    <div class="records-list">
+      {% for row in answers %}
+      <div class="record-row">
+        <strong>{{ row.position }}. {{ row.question_text if row.question_text else row.text }}</strong>
+        <p>Ваш ответ: {{ row.selected_text or (row.timed_out and 'время вышло') or 'нет ответа' }}</p>
+        <p>Правильно: {{ row.correct_text or 'не указано' }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="pagination">
+      {% if page > 1 %}
+      <a class="button button-secondary" href="{% if section == 'all' %}/results/{{ attempt_id }}?page={{ page-1 }}{% elif section == 'correct' %}/results/{{ attempt_id }}/correct?page={{ page-1 }}{% else %}/results/{{ attempt_id }}/wrong?page={{ page-1 }}{% endif %}">⬅️ Назад</a>
+      {% endif %}
+      {% if page < pages %}
+      <a class="button button-secondary" href="{% if section == 'all' %}/results/{{ attempt_id }}?page={{ page+1 }}{% elif section == 'correct' %}/results/{{ attempt_id }}/correct?page={{ page+1 }}{% else %}/results/{{ attempt_id }}/wrong?page={{ page+1 }}{% endif %}">Вперед ➡️</a>
+      {% endif %}
+    </div>
+    <div class="card-actions">
+      <a class="button button-primary" href="/results/{{ attempt_id }}">Полный отчет</a>
+      <a class="button button-secondary" href="/results/{{ attempt_id }}/correct">Правильные</a>
+      <a class="button button-secondary" href="/results/{{ attempt_id }}/wrong">Ошибки</a>
+      <a class="button button-secondary" href="/tests">К списку тестов</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

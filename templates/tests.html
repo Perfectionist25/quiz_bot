@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>{{ title }}</h2>
+      {% if mine %}
+      <p>Здесь отображаются тесты, созданные вашей учетной записью.</p>
+      {% else %}
+      <p>Список доступных тестов. Вы можете начать любой из них или создать собственный.</p>
+      {% endif %}
+    </div>
+    <a class="button button-primary" href="/upload-test">Загрузить тест</a>
+  </div>
+  {% if not tests %}
+  <div class="empty-state">
+    <strong>Пока нет тестов.</strong>
+    {% if mine %}<p>Создайте первый тест из TXT-файла.</p>{% else %}<p>Вернитесь позже или загрузите тест.</p>{% endif %}
+  </div>
+  {% else %}
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Вопросов</th>
+          <th>Действие</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for test in tests %}
+        <tr>
+          <td>{{ test.title }}</td>
+          <td>{{ test.question_count }}</td>
+          <td><a class="button button-secondary" href="{{ '/my-tests/' + test.id|string if mine else '/test/' + test.id|string }}">Открыть</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

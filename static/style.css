@@ -1,0 +1,290 @@
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #eef4fb;
+  color: #111827;
+}
+
+.header {
+  background: #1f2937;
+  color: #fff;
+  padding: 18px 0;
+}
+
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 24px;
+}
+
+.brand {
+  text-decoration: none;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.25rem;
+}
+
+.top-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.top-nav a {
+  text-decoration: none;
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+.top-nav a:hover {
+  color: #fff;
+}
+
+.main-content {
+  padding: 32px 0 48px;
+}
+
+.page-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.hero-card,
+.page-card {
+  background: #fff;
+  border-radius: 24px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+  padding: 32px;
+  margin-bottom: 24px;
+}
+
+.hero-card h1,
+.page-card h2 {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.hero-card p,
+.page-card p,
+.card-section p,
+.record-row p,
+.stat-card .stat-label {
+  margin: 0;
+}
+
+.hero-actions,
+.card-actions,
+.form-actions,
+.pagination,
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.button,
+.option-button {
+  border: none;
+  cursor: pointer;
+  border-radius: 14px;
+  padding: 14px 18px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 160px;
+  font-weight: 600;
+}
+
+.button-primary {
+  background: #2563eb;
+  color: #fff;
+}
+
+.button-secondary {
+  background: #f8fafc;
+  color: #111827;
+  border: 1px solid #e2e8f0;
+}
+
+.button-danger {
+  background: #dc2626;
+  color: #fff;
+}
+
+.option-button {
+  background: #f1f5f9;
+  color: #0f172a;
+  width: 100%;
+  text-align: left;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.option-button:hover,
+.button:hover,
+.button:focus,
+.option-button:focus {
+  transform: translateY(-1px);
+}
+
+.input,
+.select-field,
+.text-field,
+.file-field {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  font-size: 1rem;
+  background: #fff;
+  color: #111827;
+}
+
+.file-field {
+  padding: 12px 14px;
+}
+
+.form-row,
+.card-section,
+.stats-grid,
+.records-list {
+  margin-top: 20px;
+}
+
+.form-row label {
+  display: block;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.card-form {
+  display: grid;
+  gap: 18px;
+}
+
+.page-card-header,
+.card-section,
+.leaderboard-card,
+.question-box,
+.record-row,
+.stat-card {
+  background: transparent;
+}
+
+.page-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-card-header p {
+  color: #64748b;
+}
+
+.question-box {
+  display: grid;
+  gap: 22px;
+  margin-top: 24px;
+}
+
+.question-text {
+  font-size: 1.15rem;
+  line-height: 1.7;
+}
+
+.options-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.timer-box {
+  min-width: 120px;
+  text-align: center;
+  border-radius: 18px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 14px 18px;
+  font-weight: 700;
+}
+
+.timer-alert {
+  background: #fee2e2 !important;
+  color: #b91c1c !important;
+}
+
+.alert {
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 20px;
+}
+
+.alert-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.empty-state,
+.record-row,
+.stat-card,
+.leaderboard-card {
+  border-radius: 18px;
+  background: #f8fafc;
+  padding: 20px;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+thead th {
+  text-align: left;
+  color: #475569;
+  padding-bottom: 12px;
+}
+
+tbody tr {
+  border-top: 1px solid #e2e8f0;
+}
+
+td {
+  padding: 16px 0;
+}
+
+.inline-form {
+  display: inline;
+}
+
+.checkbox-row {
+  margin-top: 4px;
+}
+
+@media (max-width: 900px) {
+  .options-grid {
+    grid-template-columns: 1fr;
+  }
+  .page-card-header,
+  .form-actions,
+  .hero-actions,
+  .page-actions,
+  .pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

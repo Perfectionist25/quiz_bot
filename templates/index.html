@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Главная — QuizzBot{% endblock %}
+{% block content %}
+<div class="hero-card">
+  <h1>Привет! Добро пожаловать в QuizzBot Web</h1>
+  <p>Загружайте тесты, проходите викторины с таймером и смотрите подробную статистику в удобном веб-интерфейсе для больших экранов.</p>
+  <div class="hero-actions">
+    <a class="button button-primary" href="/tests">Список тестов</a>
+    <a class="button button-secondary" href="/upload-test">Загрузить тест</a>
+    <a class="button button-secondary" href="/stats">Моя статистика</a>
+  </div>
+</div>
+{% endblock %}

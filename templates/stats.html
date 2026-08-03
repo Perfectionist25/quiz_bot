@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — QuizzBot{% endblock %}
+{% block content %}
+<div class="page-card">
+  <div class="page-card-header">
+    <div>
+      <h2>{{ title }}</h2>
+      {% if mode == 'personal' %}
+      <p>Ваша личная история тестирования.</p>
+      {% else %}
+      <p>Сводная статистика по всем пользователям и тестам.</p>
+      {% endif %}
+    </div>
+  </div>
+  <div class="stats-grid">
+    {% if mode == 'personal' %}
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.attempts or 0 }}</div>
+      <div class="stat-label">Попыток</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.completed or 0 }}</div>
+      <div class="stat-label">Завершено</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.avg_score or 0 | float | round(1) }}%</div>
+      <div class="stat-label">Средний балл</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.best_score or 0 }}%</div>
+      <div class="stat-label">Лучший балл</div>
+    </div>
+    {% else %}
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.tests_total or 0 }}</div>
+      <div class="stat-label">Тестов</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.attempts_total or 0 }}</div>
+      <div class="stat-label">Попыток</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.completed_total or 0 }}</div>
+      <div class="stat-label">Завершено</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.avg_score or 0 | float | round(1) }}%</div>
+      <div class="stat-label">Средний результат</div>
+    </div>
+    {% endif %}
+  </div>
+  {% if mode == 'global' and top %}
+  <div class="leaderboard-card">
+    <h3>Топ участников</h3>
+    <ol>
+      {% for row in top %}
+      <li>{{ row.first_name or row.username or 'User' }} — {{ row.avg_score | float | round(1) }}% ({{ row.cnt }} попыток)</li>
+      {% endfor %}
+    </ol>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
