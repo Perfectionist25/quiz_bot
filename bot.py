@@ -261,7 +261,14 @@ def favicon():
 
 @web_app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    response, _ = render_template(request, "index.html", {})
+    # show recent tests and summary stats on the homepage
+    recent = fetch_tests(limit=6)
+    stats = global_stats()
+    response, _ = render_template(
+        request,
+        "index.html",
+        {"recent_tests": recent, "stats": stats},
+    )
     return response
 
 
@@ -658,6 +665,7 @@ def admin_stats(request: Request):
             "admin": True,
             "stats": global_stats(),
             "users": fetch_all_users(limit=30),
+            "active_attempts": fetch_active_attempts(limit=30),
             "user": user,
         },
     )
@@ -1090,6 +1098,22 @@ def fetch_all_users(limit: int = 50) -> List[sqlite3.Row]:
             """,
             (limit,),
         ).fetchall()
+
+
+    def fetch_active_attempts(limit: int = 50) -> List[sqlite3.Row]:
+        with get_conn() as conn:
+            return conn.execute(
+                """
+                SELECT a.id, a.test_id, a.user_id, a.started_at, t.title as test_title, u.first_name as user_name
+                FROM attempts a
+                LEFT JOIN tests t ON t.id = a.test_id
+                LEFT JOIN users u ON u.user_id = a.user_id
+                WHERE a.completed_at IS NULL
+                ORDER BY a.started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
 
 
 def delete_test(test_id: int, user_id: int) -> bool:

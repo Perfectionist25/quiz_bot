@@ -10,4 +10,25 @@
     <a class="button button-secondary" href="/stats">Моя статистика</a>
   </div>
 </div>
+{% if recent_tests %}
+<div class="page-card">
+  <h3>Недавние тесты</h3>
+  <ul class="compact-list">
+    {% for t in recent_tests %}
+    <li><a href="/test/{{ t.id }}">{{ t.title }}</a> — {{ t.question_count }} вопр.</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if stats %}
+<div class="page-card">
+  <h3>Краткая статистика</h3>
+  <div class="stats-grid small">
+    <div class="stat-card"><div class="stat-value">{{ stats.tests_total or 0 }}</div><div class="stat-label">Тестов</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.attempts_total or 0 }}</div><div class="stat-label">Попыток</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.active_users or 0 }}</div><div class="stat-label">Пользователей</div></div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

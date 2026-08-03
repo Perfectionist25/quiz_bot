@@ -36,6 +36,20 @@
       </div>
       {% endfor %}
     </div>
+    {% if active_attempts %}
+    <div class="card-section">
+      <h3>Активные попытки</h3>
+      <div class="records-list">
+        {% for a in active_attempts %}
+        <div class="record-row">
+          <strong>{{ a.user_name or a.user_id }}</strong>
+          <p>Тест: <a href="/test/{{ a.test_id }}">{{ a.test_title or '—' }}</a> — начато: {{ a.started_at }}</p>
+          <p><a class="button button-secondary" href="/results/{{ a.id }}">Посмотреть</a></p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
   </div>
   {% else %}
   <div class="card-section">
