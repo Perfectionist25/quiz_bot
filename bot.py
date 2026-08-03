@@ -32,7 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 STATIC_DIR = BASE_DIR / "static"
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
-WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
+WEB_PORT = int(os.getenv("WEB_PORT", "8001"))
 ADMIN_COOKIE_NAME = "quiz_admin"
 USER_COOKIE_NAME = "quiz_user_id"
 
@@ -1199,7 +1199,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         site_url = site_url.rstrip("/") + "/tests"
     else:
         host = os.getenv("WEB_HOST", "127.0.0.1")
-        port = os.getenv("WEB_PORT", "8000")
+        port = os.getenv("WEB_PORT", "8001")
         site_url = f"http://{host}:{port}/tests"
 
     return InlineKeyboardMarkup(
