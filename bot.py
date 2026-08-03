@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -176,10 +176,10 @@ def get_web_user(request: Request):
 
 def render_template(request: Request, template: str, context: dict):
     user, cookie_value = get_web_user(request)
-    response = HTMLResponse(TEMPLATES.TemplateResponse(template, {**base_context(request), **context}))
+    tpl = TEMPLATES.TemplateResponse(template, {**base_context(request), **context})
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response, user
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl, user
 
 
 def create_attempt_record(test_id: int, user_id: int, timer_seconds: int) -> int:
@@ -251,6 +251,14 @@ def startup_event():
     init_db()
 
 
+@web_app.get("/favicon.ico")
+def favicon():
+    icon_path = STATIC_DIR / "favicon.svg"
+    if icon_path.exists():
+        return FileResponse(icon_path, media_type="image/svg+xml")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+
 @web_app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     response, _ = render_template(request, "index.html", {})
@@ -276,19 +284,19 @@ def list_tests(request: Request):
 @web_app.get("/my-tests", response_class=HTMLResponse)
 def my_tests(request: Request):
     user, cookie_value = get_web_user(request)
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "tests.html",
         {
             **base_context(request),
             "title": "Мои тесты",
-            "tests": fetch_my_tests(int(user["user_id"])),
+            "tests": fetch_my_tests(int(user["user_id"] or 0)),
             "mine": True,
             "user": user,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/upload-test", response_class=HTMLResponse)
@@ -313,13 +321,14 @@ async def upload_test(request: Request, file: UploadFile = File(...)):
     try:
         parsed = parse_test_txt(text, fallback_title=fallback_title)
     except ValueError as exc:
-        return HTMLResponse(TEMPLATES.TemplateResponse(
+        tpl = TEMPLATES.TemplateResponse(
             "upload.html",
             {
                 **base_context(request, str(exc)),
                 "title": "Загрузить тест",
             },
-        ))
+        )
+        return tpl
     test_id = save_test(int(user["user_id"] or 0), file.filename, parsed)
     response = RedirectResponse(url=f"/my-tests/{test_id}", status_code=status.HTTP_303_SEE_OTHER)
     if cookie_value:
@@ -376,7 +385,7 @@ def show_attempt(request: Request, attempt_id: int):
         return RedirectResponse(url=f"/results/{attempt_id}", status_code=status.HTTP_303_SEE_OTHER)
     question = current["question"]
     question_start = datetime.now(timezone.utc).timestamp()
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "attempt.html",
         {
             **base_context(request),
@@ -389,10 +398,11 @@ def show_attempt(request: Request, attempt_id: int):
             "timer_seconds": int(attempt["timer_seconds"]),
             "user": user,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
+    
 
 
 @web_app.post("/attempt/{attempt_id}/answer")
@@ -491,7 +501,7 @@ def view_result(request: Request, attempt_id: int, page: int = 1):
     page = max(1, min(page, pages or 1))
     start = (page - 1) * PAGE_SIZE
     page_items = answers[start:start + PAGE_SIZE]
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "results.html",
         {
             **base_context(request),
@@ -503,10 +513,10 @@ def view_result(request: Request, attempt_id: int, page: int = 1):
             "section": "all",
             "attempt_id": attempt_id,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/results/{attempt_id}/correct", response_class=HTMLResponse)
@@ -520,7 +530,7 @@ def view_correct(request: Request, attempt_id: int, page: int = 1):
     page = max(1, min(page, pages or 1))
     start = (page - 1) * PAGE_SIZE
     page_items = rows[start:start + PAGE_SIZE]
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "results.html",
         {
             **base_context(request),
@@ -531,10 +541,10 @@ def view_correct(request: Request, attempt_id: int, page: int = 1):
             "section": "correct",
             "attempt_id": attempt_id,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/results/{attempt_id}/wrong", response_class=HTMLResponse)
@@ -548,7 +558,7 @@ def view_wrong(request: Request, attempt_id: int, page: int = 1):
     page = max(1, min(page, pages or 1))
     start = (page - 1) * PAGE_SIZE
     page_items = rows[start:start + PAGE_SIZE]
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "results.html",
         {
             **base_context(request),
@@ -559,17 +569,17 @@ def view_wrong(request: Request, attempt_id: int, page: int = 1):
             "section": "wrong",
             "attempt_id": attempt_id,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/stats", response_class=HTMLResponse)
 def my_stats(request: Request):
     user, cookie_value = get_web_user(request)
     stats = user_stats(int(user["user_id"] or 0))
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "stats.html",
         {
             **base_context(request),
@@ -578,10 +588,10 @@ def my_stats(request: Request):
             "mode": "personal",
             "user": user,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/global-stats", response_class=HTMLResponse)
@@ -589,7 +599,7 @@ def global_stats_page(request: Request):
     user, cookie_value = get_web_user(request)
     gs = global_stats()
     top = leaderboard()
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "stats.html",
         {
             **base_context(request),
@@ -599,35 +609,35 @@ def global_stats_page(request: Request):
             "mode": "global",
             "user": user,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/admin", response_class=HTMLResponse)
 def admin_login(request: Request, error: Optional[str] = None):
     user, cookie_value = get_web_user(request)
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "admin.html",
         {**base_context(request), "title": "Админ-доступ", "error": error},
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.post("/admin", response_class=HTMLResponse)
 def admin_auth(request: Request, password: str = Form(...)):
     user, cookie_value = get_web_user(request)
     if password != get_admin_password():
-        response = HTMLResponse(TEMPLATES.TemplateResponse(
+        tpl = TEMPLATES.TemplateResponse(
             "admin.html",
             {**base_context(request), "title": "Админ-доступ", "error": "Неверный пароль."},
-        ))
+        )
         if cookie_value:
-            response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-        return response
+            tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+        return tpl
     response = RedirectResponse(url="/admin/stats", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(ADMIN_COOKIE_NAME, "1", max_age=60 * 30)
     if cookie_value:
@@ -640,7 +650,7 @@ def admin_stats(request: Request):
     if not is_admin_verified(request):
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     user, cookie_value = get_web_user(request)
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "admin.html",
         {
             **base_context(request),
@@ -650,10 +660,10 @@ def admin_stats(request: Request):
             "users": fetch_all_users(limit=30),
             "user": user,
         },
-    ))
+    )
     if cookie_value:
-        response.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
-    return response
+        tpl.set_cookie(USER_COOKIE_NAME, cookie_value, max_age=60 * 60 * 24 * 365)
+    return tpl
 
 
 @web_app.get("/my-tests/{test_id}", response_class=HTMLResponse)
@@ -662,11 +672,11 @@ def my_test_detail(request: Request, test_id: int):
     test = fetch_test_details(test_id)
     if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "my_test_detail.html",
         {**base_context(request), "title": test["title"], "test": test},
-    ))
-    return response
+    )
+    return tpl
 
 
 @web_app.get("/my-tests/{test_id}/rename", response_class=HTMLResponse)
@@ -675,11 +685,11 @@ def rename_test_page(request: Request, test_id: int):
     test = fetch_test_details(test_id)
     if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "rename_test.html",
         {**base_context(request), "title": "Переименовать тест", "test": test},
-    ))
-    return response
+    )
+    return tpl
 
 
 @web_app.post("/my-tests/{test_id}/rename")
@@ -699,11 +709,11 @@ def append_test_page(request: Request, test_id: int):
     test = fetch_test_details(test_id)
     if not test or int(test["creator_id"]) != int(user["user_id"] or 0):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Тест не найден или доступ запрещен.")
-    response = HTMLResponse(TEMPLATES.TemplateResponse(
+    tpl = TEMPLATES.TemplateResponse(
         "append_test.html",
         {**base_context(request), "title": "Добавить вопросы", "test": test},
-    ))
-    return response
+    )
+    return tpl
 
 
 @web_app.post("/my-tests/{test_id}/append", response_class=HTMLResponse)
@@ -1161,10 +1171,12 @@ def reset_user_states(user_data: dict) -> None:
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     # compute site URL: prefer explicit WEB_URL env, fallback to host:port
     site_url = os.getenv("WEB_URL")
-    if not site_url:
+    if site_url:
+        site_url = site_url.rstrip("/") + "/tests"
+    else:
         host = os.getenv("WEB_HOST", "127.0.0.1")
         port = os.getenv("WEB_PORT", "8000")
-        site_url = f"http://{host}:{port}"
+        site_url = f"http://{host}:{port}/tests"
 
     return InlineKeyboardMarkup(
         [
