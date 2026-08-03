@@ -2243,7 +2243,12 @@ def main() -> None:
     web_thread.start()
 
     # polling controlled by RUN_BOT env var; default is off for web-only runs
-    run_bot = os.getenv("RUN_BOT", "0").lower() in ("1", "true", "yes")
+    run_bot_env = os.getenv("RUN_BOT")
+    if run_bot_env is None:
+        run_bot = bool(os.getenv("BOT_TOKEN"))
+    else:
+        run_bot = run_bot_env.lower() in ("1", "true", "yes")
+
     if not run_bot:
         # block here so the process doesn't exit while web server runs
         web_thread.join()
