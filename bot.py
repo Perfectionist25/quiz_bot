@@ -1198,7 +1198,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     if site_url:
         site_url = site_url.rstrip("/") + "/tests"
     else:
-        host = os.getenv("WEB_HOST", "127.0.0.1")
+        host = os.getenv("WEB_HOST", "0.0.0.0")
         port = os.getenv("WEB_PORT", "8001")
         site_url = f"http://{host}:{port}/tests"
 
