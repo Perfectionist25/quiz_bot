@@ -2238,8 +2238,17 @@ def main() -> None:
     )
     load_env_file(Path(__file__).with_name(".env"))
     init_db()
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    # start web server in background thread (non-daemon so process stays alive)
+    web_thread = threading.Thread(target=run_web_server, daemon=False)
     web_thread.start()
+
+    # polling controlled by RUN_BOT env var; default is off for web-only runs
+    run_bot = os.getenv("RUN_BOT", "0").lower() in ("1", "true", "yes")
+    if not run_bot:
+        # block here so the process doesn't exit while web server runs
+        web_thread.join()
+        return
+
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Укажите BOT_TOKEN в переменных окружения или в файле .env.")
